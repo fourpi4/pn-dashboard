@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подоходный налог</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="static/styles.css">
+</head>
+<body>
+<header>
+  <div><h1>Подоходный налог · ОФ</h1>
+  <div class="fresh" id="fresh">Данные: нет</div></div>
+  <div class="hbar">
+    <label>Период <input type="month" id="period"></label>
+    <input type="file" id="fileAdd" accept=".xlsx,.xls" hidden>
+    <button onclick="downloadTemplate()" title="Пустой шаблон для загрузки сотрудников и начислений">⬇ Шаблон Excel</button>
+    <button onclick="fileAdd.click()" title="Добавляет/обновляет сотрудников и начисления за выбранный период">📥 Загрузить из Excel</button>
+    <button onclick="exportXlsx()">Выгрузить в Excel</button>
+  </div>
+</header>
+<div class="layout">
+<aside id="nav"></aside>
+<main>
+<div id="viewMain">
+  <div class="crumbs" id="crumbs"></div>
+  <div class="ptitle">
+    <div><h2 id="ttl"></h2><div class="chips" id="chips"></div></div>
+    <div class="hbar">
+      <button onclick="openCalc()">🧮 Калькулятор ПН</button>
+      <button onclick="openPay()">💳 + Платёж</button>
+      <button class="pri" onclick="openForm()">+ Добавить сотрудника</button>
+    </div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <div class="ch"><h3 id="pivotTitle">Итоги</h3><span class="fresh" id="pivotNote"></span></div>
+    <div class="tw" style="max-height:none"><table id="pivot"></table></div>
+  </div>
+
+  <div class="card">
+    <div class="ch"><h3 id="yearTitle">ПН по месяцам</h3>
+      <div class="tools"><button class="ib" onclick="shiftYear(-1)" title="Предыдущий год">◀</button><b id="yearLbl"></b><button class="ib" onclick="shiftYear(1)" title="Следующий год">▶</button></div></div>
+    <div class="tw" style="max-height:none"><table id="yearTbl"></table></div>
+  </div>
+</div>
+
+<section id="viewVed" hidden>
+  <div class="crumbs" id="vCrumbs"></div>
+  <div class="ptitle">
+    <div><h2 id="vTtl">Ведомость ПН</h2><div class="chips" id="vChips"></div></div>
+    <div class="hbar">
+      <button onclick="go(V.org,'')">← К итогам</button>
+      <button onclick="openCalc()">🧮 Калькулятор ПН</button>
+      <button class="pri" onclick="openForm()">+ Добавить сотрудника</button>
+    </div>
+  </div>
+  <div class="kpis k5" id="vKpis"></div>
+  <div class="card">
+    <div class="ch">
+      <span class="fresh">Начислено, необлагаемые и дни факт — за выбранный период; правьте прямо в таблице</span>
+      <div class="tools">
+        <input id="fq" placeholder="Поиск ФИО / ИНН" style="min-width:220px">
+        <label class="sw"><input type="checkbox" id="showAll"> Показать уволенных</label>
+      </div>
+    </div>
+    <div class="tw"><table id="tbl"></table></div>
+  </div>
+</section>
+
+<section id="viewPay" hidden>
+  <div class="crumbs"><a onclick="go(V.org,'')">← К итогам</a></div>
+  <div class="ptitle">
+    <div><h2>💳 Платежи по подоходному налогу</h2><div class="chips" id="pChips"></div></div>
+    <div class="hbar"><button class="pri" onclick="openPay()">+ Добавить платёж</button></div>
+  </div>
+  <div class="kpis" id="pKpis"></div>
+  <div class="card">
+    <div class="ch"><h3>Начислено и уплачено по месяцам</h3><span class="fresh">Срок уплаты ПН — до 20-го числа месяца, следующего за отчётным</span></div>
+    <div class="tw" style="max-height:none"><table id="pSched"></table></div>
+  </div>
+  <div class="card">
+    <div class="ch"><h3>Платёжные поручения</h3></div>
+    <div class="tw" style="max-height:none"><table id="pTbl"></table></div>
+  </div>
+</section>
+</main>
+</div>
+
+<dialog id="dlgPay">
+<form method="dialog" id="payFrm">
+  <h3 id="payTitle">Платёж по ПН</h3>
+  <div class="grid">
+    <label>Организация *<select name="org" required></select></label>
+    <label>Регион<select name="reg"></select></label>
+    <label>За месяц *<input name="per" type="month" required></label>
+    <label>Дата платежа *<input name="date" type="date" required></label>
+    <label>Сумма, сом *<input name="sum" type="number" min="0" step="0.01" required></label>
+    <label>№ платёжного поручения<input name="no"></label>
+    <label class="w">Комментарий<input name="note" placeholder="необязательно"></label>
+  </div>
+  <div class="hint" id="payHint" style="margin-top:10px"></div>
+  <div class="acts"><button type="button" id="payDel" class="danger" style="margin-right:auto">🗑 Удалить</button><button value="cancel" formnovalidate>Отмена</button><button class="pri" value="ok">Сохранить</button></div>
+</form>
+</dialog>
+
+<dialog id="dlgCalc" class="calc">
+  <div class="cwrap">
+    <div class="ctop"><div><div class="ckick">Подоходный налог · Кыргызстан · НК КР</div><h3>Калькулятор подоходного налога</h3></div><button class="ib" onclick="dlgCalc.close()" title="Закрыть" style="font-size:20px">✕</button></div>
+    <div class="cgrid">
+      <div class="cin">
+        <b>Введите сумму</b>
+        <div class="fresh">Посчитаем вычеты, облагаемую базу, подоходный налог и сумму на руки.</div>
+        <div class="seg2" id="cMode"><button data-m="gross" class="on">Начислено</button><button data-m="net">На руки</button></div>
+        <div class="camt"><input id="cAmt" inputmode="decimal" placeholder="0" autocomplete="off"><span>сом</span></div>
+        <div class="crow">
+          <label>Категория <select id="cCat"><option value="std">Обычный работник</option><option value="pens">Пенсионер</option><option value="inv">Инвалид I–II группы</option></select></label>
+          <label>ПН <select id="cPn"><option value="10">10%</option><option value="5">5% (ПВТ / креативные индустрии)</option><option value="1">1% (швейная / текстильная)</option></select></label>
+        </div>
+        <div class="crow">
+          <label class="ck"><input type="checkbox" id="cMain" checked> Основное место (вычет 650)</label>
+          <label>Иждивенцы <input id="cDeps" type="number" min="0" step="1" value="0" style="width:64px"></label>
+          <label>Человек: <input id="cN" type="number" min="1" step="1" value="1" style="width:64px"></label>
+        </div>
+        <details class="crow" style="display:block"><summary style="cursor:pointer">Дополнительно: необлагаемые доходы, МРД</summary>
+          <div class="crow" style="margin-top:8px">
+            <label>Необлагаемые <input id="cNt" type="number" min="0" step="0.01" value="0" style="width:100px"></label>
+            <label>МРД (60% СМЗ района) <input id="cMrd" type="number" min="0" step="0.01" value="0" style="width:110px"></label>
+          </div>
+        </details>
+        <div class="fresh" id="cNote" style="margin-top:8px"></div>
+      </div>
+      <div class="cout"><table id="cTbl"></table></div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlgRates" style="width:min(760px,calc(100vw - 32px))">
+<form method="dialog">
+  <h3>⚙ Настройки ставки расчёта</h3>
+  <div class="grid" id="rates"></div>
+  <div class="sect">СМЗ района по регионам (для МРД)</div>
+  <div class="fresh" style="margin-bottom:8px">МРД = % от СМЗ (среднемесячной зарплаты) района. Если облагаемая база меньше МРД — (МРД − база) × ставка ПН платит работодатель (STI-161 гр. 17). Пусто — МРД не применяется.</div>
+  <div class="tw" style="max-height:none"><table id="smzTbl"></table></div>
+  <div class="note" style="padding:12px 0 0">ПН = (Начислено − Необлагаемые − взнос работника в ПФ − ГНПФ − вычет) × ставка ПН. Вычет = 650 + 100 × иждивенцы — только если трудовые отношения в месяце ≥ 15 дней и не совместитель (НК КР ст. 194, ст. 200 ч. 7); в карточке «Вычет: Да/Нет» переопределяет. Взносы считаются с min(Начислено, предельная база).</div>
+  <div class="acts"><button type="button" class="danger" style="margin-right:auto" onclick="deleteAll()">🗑 Удалить все данные</button><button type="button" onclick="resetRates()">Сбросить по умолчанию</button><button class="pri" value="ok">Готово</button></div>
+</form>
+</dialog>
+
+<dialog id="dlg">
+<form method="dialog" id="frm">
+  <h3 id="dlgTitle">Новый сотрудник</h3>
+  <div class="grid">
+    <label class="w">ФИО *<input name="fio" required></label>
+    <label>ИНН (14 цифр)<input name="inn" inputmode="numeric" maxlength="14"><span class="hint" id="innHint"></span></label>
+    <label>Оклад, сом *<input name="oklad" type="number" min="0" step="0.01" required></label>
+    <label>Организация *<select name="org" required></select></label>
+    <label>Регион *<select name="reg" required></select></label>
+    <label>Дата приёма<input name="ordDate" type="date"></label>
+    <label>Дата увольнения<input name="fireDate" type="date"></label>
+    <label>Совместитель<div class="seg"><label><input type="radio" name="part" value="0" checked>Нет</label><label><input type="radio" name="part" value="1">Да</label></div></label>
+    <label>Иждивенцы<input name="deps" type="number" min="0" step="1" value="0"></label>
+    <label class="w">Категория работников (гр. 4 STI-161)<select name="cat">
+      <option value="auto">Авто по ИНН — 001 работник или 003 пенсионер (по возрасту)</option>
+      <option value="std">001 — Работник, резидент КР</option>
+      <option value="pens">003 — Пенсионер</option>
+      <option value="mop">106 — МОП (младший обслуживающий персонал)</option>
+      <option value="inv">Инвалид I–II группы</option>
+    </select></label>
+    <label class="w">Вычет 650 + иждивенцы<div class="seg"><label><input type="radio" name="dedMode" value="" checked>Авто</label><label><input type="radio" name="dedMode" value="1">Да</label><label><input type="radio" name="dedMode" value="0">Нет</label></div></label>
+  </div>
+  <div class="sect" id="perSect">Начисления за период</div>
+  <div class="grid">
+    <label>Начислено, сом<input name="acc" type="number" min="0" step="0.01" placeholder="= оклад"></label>
+    <label>Необлагаемые доходы (ст. 191), сом<input name="nt" type="number" min="0" step="0.01" placeholder="0"></label>
+    <label>Дней факт<input name="days" type="number" min="0" step="1" placeholder="авто"></label>
+  </div>
+  <div class="hint" id="calcHint" style="margin-top:10px"></div>
+  <div class="acts"><button type="button" id="delBtn" class="danger" style="margin-right:auto">🗑 Удалить сотрудника</button><button value="cancel" formnovalidate>Отмена</button><button class="pri" value="ok">Сохранить</button></div>
+</form>
+</dialog>
+<script src="static/app.js"></script>
+</body>
+</html>

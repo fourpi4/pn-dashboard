@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+dist/
+build/
+.DS_Store
+Thumbs.db
+~$*.xlsx
+# личные данные сотрудников — не класть в репозиторий
+*.json
+!package.json
