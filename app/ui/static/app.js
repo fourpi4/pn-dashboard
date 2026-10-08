@@ -12,13 +12,78 @@ const RATE_DEF={
   penW:{l:"Женщины — пенсионер с, лет",v:58,g:"Пенсионный возраст (категория «Авто» по ИНН)"},penM:{l:"Мужчины — пенсионер с, лет",v:63,g:"Пенсионный возраст (категория «Авто» по ИНН)"}
 };
 const CATS={std:"001",pens:"003 пенс.",inv:"инвалид",mop:"106 МОП"};
-const KEY="pn_of_v1";
 const curMonth=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`};
-let S={emps:[],pays:[],smz:{},rates:Object.fromEntries(Object.entries(RATE_DEF).map(([k,o])=>[k,o.v])),period:"",year:0,mod:null,src:null,showAll:false};
-try{const s=JSON.parse(localStorage.getItem(KEY));if(s&&s.emps)S={...S,...s,rates:{...S.rates,...s.rates}}}catch(e){}
-if(!S.period)S.period=curMonth();
-if(!S.year)S.year=+S.period.slice(0,4);
-const save=()=>{S.mod=Date.now();try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){alert("Не удалось сохранить данные в браузере: "+e.message)}};
+const DEF=()=>({emps:[],pays:[],smz:{},rates:Object.fromEntries(Object.entries(RATE_DEF).map(([k,o])=>[k,o.v])),period:"",year:0,mod:null,src:null,showAll:false});
+let S=DEF();
+
+// ================= Связь с ботом «Аванс»: данные сайта хранятся на сервере бота в зашифрованном виде =================
+// Адрес бота и ключ (команда /pn_key у бота) вводятся один раз и запоминаются только в этом браузере.
+const CONN_KEY="pn_bot_conn";
+const DEF_BOT_URL="https://avans-osh.onrender.com";
+let CONN=null;
+try{CONN=JSON.parse(localStorage.getItem(CONN_KEY)||"null")}catch(e){}
+let ME=null;
+const SRV={version:0,timer:null,saving:false,dirty:false,err:"",stop:false};
+async function api(path,body){
+  if(!CONN||!CONN.key)throw Object.assign(new Error("Не указан ключ бота"),{status:401});
+  let r;
+  try{r=await fetch(CONN.url.replace(/\/+$/,"")+"/api/pn/"+path,{method:body?"POST":"GET",headers:{"content-type":"application/json",authorization:"Bearer "+CONN.key},body:body?JSON.stringify(body):undefined})}
+  catch(e){throw Object.assign(new Error("Бот «Аванс» недоступен — проверьте интернет и адрес бота"),{status:0})}
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw Object.assign(new Error(j.error||`Ошибка сервера ${r.status}`),{status:r.status});
+  return j;
+}
+// Каждое изменение уходит на сервер через 0,8 с; одновременную правку другим пользователем сервер отклоняет (409)
+const save=()=>{S.mod=Date.now();SRV.dirty=true;clearTimeout(SRV.timer);if(!SRV.stop)SRV.timer=setTimeout(flush,800);syncNote()};
+async function flush(){
+  if(SRV.saving||!SRV.dirty||SRV.stop)return;
+  SRV.saving=true;SRV.dirty=false;syncNote();
+  try{const r=await api("state",{state:S,version:SRV.version});SRV.version=r.version;SRV.err=""}
+  catch(e){
+    SRV.dirty=true;SRV.err=e.message;
+    if(e.status===409){SRV.dirty=false;SRV.err="";await note(e.message+"\nВаши последние изменения не сохранены — повторите их.");await loadState()}
+    else if(e.status===401||e.status===403){SRV.stop=true;note(e.message+"\nУкажите новый ключ в «🔗 Бот «Аванс»». Несохранённые изменения будут потеряны.")}
+  }
+  finally{SRV.saving=false;syncNote();if(SRV.dirty&&!SRV.stop)SRV.timer=setTimeout(flush,4000)}
+}
+function syncNote(){
+  const el=document.getElementById("syncSt");if(!el)return;
+  el.className="sync "+(SRV.err?"bad":SRV.saving||SRV.dirty?"busy":"ok");
+  el.textContent=SRV.err?"⚠ не сохранено: "+SRV.err:SRV.saving||SRV.dirty?"сохраняю…":"✓ сохранено на сервере";
+}
+window.addEventListener("beforeunload",ev=>{if(SRV.dirty||SRV.saving){ev.preventDefault();ev.returnValue=""}});
+async function loadState(){
+  const r=await api("state"),d=DEF(),st=r.state||{};
+  S={...d,...st,rates:{...d.rates,...(st.rates||{})}};
+  if(!S.period)S.period=curMonth();if(!S.year)S.year=+S.period.slice(0,4);
+  SRV.version=r.version||0;SRV.info=r;
+  period.value=S.period;showAll.checked=!!S.showAll;
+  BOT.per="";render();refreshBot(true);
+}
+// ---- Связь с ботом: сотрудник дашборда ↔ сотрудник бота (Telegram ID → ИНН → ФИО), авансы за период
+const BOT={per:"",links:{},requests:[],err:"",loading:false,staff:0};
+async function refreshBot(force){
+  const per=S.period;if(!force&&BOT.per===per)return;
+  BOT.loading=true;renderBotNote();
+  try{
+    const r=await api("advances",{period:per,employees:S.emps.map(e=>({key:e.id,inn:e.inn||"",fio:e.fio||"",tg:e.tg||""}))});
+    if(per!==S.period)return;
+    BOT.per=per;BOT.links=Object.fromEntries(r.links.map(l=>[l.key,l]));BOT.requests=r.requests||[];BOT.staff=r.botEmployees;BOT.err="";
+  }catch(e){BOT.err=e.message}
+  BOT.loading=false;render();
+}
+const linkOf=e=>BOT.per===S.period?BOT.links[e.id]:null;
+function advOf(e){const l=linkOf(e);return l&&l.matched?l.advances:null}
+const advTaken=a=>a?r2(num(a.paid)+num(a.approved)):0;   // выдано + одобрено (к выдаче)
+function renderBotNote(){
+  const el=document.getElementById("botNote");if(!el)return;
+  const per=S.emps.filter(e=>active(e,S.period)),m=per.filter(e=>(linkOf(e)||{}).matched).length;
+  el.innerHTML=BOT.loading?"Бот «Аванс»: загружаю авансы…":BOT.err?`<span class="sync bad">Бот «Аванс»: ${esc(BOT.err)}</span>`:
+    `Бот «Аванс»: связано <b>${m}</b> из ${per.length} сотрудников (в боте ${BOT.staff}). Связь — по Telegram ID, ИНН или ФИО. Начисленное и дни факт правьте прямо в таблице.`;
+}
+// ---- Свои окна для сообщений и подтверждений
+function msgBox(text,cancel){return new Promise(res=>{msgText.textContent=text;msgCancel.hidden=!cancel;dlgMsg.returnValue="";dlgMsg.onclose=()=>res(dlgMsg.returnValue==="ok");dlgMsg.showModal()})}
+const note=t=>msgBox(t,false),ask=t=>msgBox(t,true);
 const r2=x=>Math.round(x*100)/100;
 const num=v=>{if(v==null||v==="")return 0;const n=parseFloat(String(v).replace(/\s/g,"").replace(",","."));return isNaN(n)?0:n};
 const fmt=x=>(x||0).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -125,9 +190,10 @@ function render(){
   viewMain.hidden=V.view!=="main";viewVed.hidden=V.view!=="ved";viewPay.hidden=V.view!=="pay";
   renderNav();
   const scope=scopeList();
-  if(V.view==="ved")renderVed(scope);else if(V.view==="pay")renderPay(scope);else{renderHead(scope);renderPivot(scope);renderYear(scope)}
+  if(V.view==="ved")renderVed(scope);else if(V.view==="pay")renderPay(scope);else{renderHead(scope);renderPivot(scope);renderAdv();renderYear(scope)}
   const src=S.src?`Excel «${esc(S.src.name)}» загружен ${new Date(S.src.at).toLocaleString("ru-RU")}`:"ручной ввод";
-  fresh.innerHTML=`Данные: ${src} · изменено ${S.mod?new Date(S.mod).toLocaleString("ru-RU"):"—"} · период <b>${perLabel(S.period)}</b>, срок уплаты ПН до ${fmtD(dueOf(S.period))} · <b>не база ОФ</b>`;
+  fresh.innerHTML=`<span id="syncSt"></span> · бот «Аванс» ${esc(CONN?CONN.url.replace(/^https?:\/\//,""):"не подключён")} · данные: ${src} · изменено ${S.mod?new Date(S.mod).toLocaleString("ru-RU"):"—"} · период <b>${perLabel(S.period)}</b>, срок уплаты ПН до ${fmtD(dueOf(S.period))} · <b>не база ОФ</b>`;
+  syncNote();renderBotNote();
 }
 function go(org,reg){V.view="main";V.org=org;V.reg=reg||"";render();window.scrollTo({top:0})}
 function openVed(org,reg){V.view="ved";V.org=org||"";V.reg=reg||"";fq.value="";render();window.scrollTo({top:0})}
@@ -199,14 +265,14 @@ function renderYear(scope){
 }
 yearTbl.addEventListener("click",ev=>{const r=ev.target.closest("tr[data-per]");if(r)setPeriod(r.dataset.per)});
 function shiftYear(d){S.year+=d;save();render()}
-function setPeriod(p){S.period=p;period.value=p;S.year=+p.slice(0,4);save();render()}
+function setPeriod(p){S.period=p;period.value=p;S.year=+p.slice(0,4);save();render();refreshBot()}
 
 // ---- Ведомость ПН
 const COLS=[
   {k:"fio",l:"Сотрудник",s:1},{k:"cat",l:"Кат."},{k:"deps",l:"Ижд.",n:1},{k:"oklad",l:"Оклад",n:1,gl:1},
   {k:"acc",l:"Начислено",n:1,in:1,s:1},{k:"nt",l:"Необлаг.",n:1,in:1},{k:"days",l:"Дней факт",n:1,in:1},
   {k:"sf",l:"ПФ",n:1,gl:1},{k:"gn",l:"ГНПФ",n:1},{k:"ded",l:"Вычет",n:1},{k:"tb",l:"Облаг. база",n:1},
-  {k:"pn",l:"ПН",n:1,gl:1,s:1},{k:"mrd",l:"МРД",n:1},{k:"pnMrd",l:"ПН с МРД",n:1},{k:"pnAll",l:"ПН всего",n:1,s:1},{k:"net",l:"На руки",n:1,gl:1},{k:"x",l:""}
+  {k:"pn",l:"ПН",n:1,gl:1,s:1},{k:"mrd",l:"МРД",n:1},{k:"pnMrd",l:"ПН с МРД",n:1},{k:"pnAll",l:"ПН всего",n:1,s:1},{k:"net",l:"На руки",n:1,gl:1},{k:"adv",l:"Аванс (бот)",n:1},{k:"pay",l:"К выплате",n:1},{k:"x",l:""}
 ];
 function sortVal(e,k){if(k==="fio")return(e.fio||"").toLowerCase();const c=calc(e);return k==="acc"?c.o:c[k]}
 const initials=f=>String(f||"?").split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase();
@@ -222,12 +288,16 @@ function cell(c,e,x){
       return`<td class="n"><input class="avi" data-f="${c.k}" data-id="${e.id}" value="${esc(v)}" placeholder="${esc(ph)}" inputmode="decimal" style="width:${c.k==="days"?60:100}px" ${x.off?"disabled":""}></td>`}
     case"ded":return`<td class="n ded" title="${p.ded?"вычет 650 + иждивенцы":"без вычета 650: "+(e.part?"совместитель":p.short?"< 15 дней":"отключён в карточке")}">${fmt(x.ded)}${p.ded?"":" <span class='tag a'>—</span>"}</td>`;
     case"pnAll":return`<td class="n net">${fmt(x.pnAll)}</td>`;
+    case"adv":{const l=linkOf(e),a=advOf(e);if(!l||!l.matched)return`<td class="n adv none" title="Не найден в боте — укажите Telegram ID в карточке">${BOT.per===S.period?"нет в боте":"…"}</td>`;
+      return`<td class="n adv" title="В боте: ${esc(l.fullName)} (${l.by==="telegram"?"по Telegram ID":l.by==="inn"?"по ИНН":"по ФИО"}) · выдано ${fmt(num(a.paid))}, одобрено ${fmt(num(a.approved))}">${fmt(advTaken(a))}${num(a.pending)?`<span class="sm">ждёт ${fmt0(num(a.pending))}</span>`:""}</td>`}
+    case"pay":return`<td class="n" style="font-weight:600">${fmt(r2(x.net-advTaken(advOf(e))))}</td>`;
     case"x":return`<td><button class="ib act" data-edit="${e.id}" title="Карточка сотрудника">✎</button></td>`;
     default:return`<td class="n ${c.gl?"gl":""} ${["sf","gn"].includes(c.k)?"ded":""}">${fmt(x[c.k])}</td>`;
   }
 }
-function totRow(label,t,cls){
-  return`<tr class="${cls}">${COLS.map(c=>c.k==="fio"?`<td class="fio">${label}</td>`:["o","sf","gn","ded","tb","pn","mrd","pnMrd","pnAll","net","nt"].includes(c.k==="acc"?"o":c.k)?`<td class="n ${c.gl?"gl":""}">${fmt(t[c.k==="acc"?"o":c.k])}</td>`:`<td class="${c.gl?"gl":""}"></td>`).join("")}</tr>`;
+function totRow(label,t,cls,list){
+  const adv=r2((list||[]).reduce((s,e)=>s+advTaken(advOf(e)),0));t={...t,adv,pay:r2(t.net-adv)};
+  return`<tr class="${cls}">${COLS.map(c=>c.k==="fio"?`<td class="fio">${label}</td>`:c.k==="adv"||c.k==="pay"?`<td class="n">${fmt(t[c.k])}</td>`:["o","sf","gn","ded","tb","pn","mrd","pnMrd","pnAll","net","nt"].includes(c.k==="acc"?"o":c.k)?`<td class="n ${c.gl?"gl":""}">${fmt(t[c.k==="acc"?"o":c.k])}</td>`:`<td class="${c.gl?"gl":""}"></td>`).join("")}</tr>`;
 }
 function renderVed(scope){
   const o=V.org,g=V.reg,list=scope.filter(e=>!g||e.reg===g),t=sum(list);
@@ -235,7 +305,8 @@ function renderVed(scope){
   vTtl.textContent=`Ведомость ПН · ${g||(o?o+" — все регионы":"все организации")}`;
   const ch=[perLabel(S.period),plural(t.cnt,"сотрудник","сотрудника","сотрудников")];if(o&&g)ch.push(o);if(t.part)ch.push(`совместителей: ${t.part}`);if(t.mrdCnt)ch.push(`ПН с МРД: ${t.mrdCnt}`);
   vChips.innerHTML=ch.map(c=>`<span class="chip">${esc(c)}</span>`).join("");
-  vKpis.innerHTML=kpiHtml([["Начислено",t.o],["Облагаемая база",t.tb],["ПН удержан",t.pn],["ПН с МРД",t.pnMrd],["ПН всего",t.pnAll,"main"]]);
+  const adv=r2(list.reduce((s,e)=>s+advTaken(advOf(e)),0));
+  vKpis.innerHTML=kpiHtml([["Начислено",t.o],["ПН удержан",t.pn],["ПН всего (с МРД)",t.pnAll,"main"],["Аванс из бота (выдано + одобрено)",adv],["К выплате (на руки − аванс)",r2(t.net-adv)]]);
   const q=fq.value.trim().toLowerCase();
   let rows=list.filter(e=>(!q||[e.fio,e.inn].join(" ").toLowerCase().includes(q))&&(S.showAll||active(e,S.period)));
   let h=`<thead><tr class="h" style="top:0">${COLS.map(c=>`<th class="${c.n?"n":""} ${c.gl?"gl":""} ${c.s?"s":""} ${c.k==="fio"?"fio":""}" style="top:0" ${c.s?`data-s="${c.k}"`:""}>${c.l}${V.sort===c.k?`<span class="ar">${V.dir>0?"▲":"▼"}</span>`:""}</th>`).join("")}</tr></thead><tbody>`;
@@ -244,10 +315,10 @@ function renderVed(scope){
   const gk=!o?"org":!g?"reg":null,gitems=gk==="org"?orgList():gk==="reg"?regList():[null];
   for(const gi of gitems){
     const part=(gi==null?rows:rows.filter(e=>e[gk]===gi)).sort(cmp);if(!part.length)continue;
-    if(gi!=null)h+=totRow(`${esc(gi)} <span style="color:var(--mute);font-weight:400">· ${part.length} чел.</span>`,sum(part),"grp");
+    if(gi!=null)h+=totRow(`${esc(gi)} <span style="color:var(--mute);font-weight:400">· ${part.length} чел.</span>`,sum(part),"grp",part);
     for(const e of part)h+=`<tr class="e">${COLS.map(c=>cell(c,e,calc(e))).join("")}</tr>`;
   }
-  tbl.innerHTML=h+`</tbody><tfoot>${totRow(`ИТОГО · ${rows.length} чел.`,sum(rows),"")}</tfoot>`;
+  tbl.innerHTML=h+`</tbody><tfoot>${totRow(`ИТОГО · ${rows.length} чел.`,sum(rows),"",rows)}</tfoot>`;
 }
 vCrumbs.addEventListener("click",ev=>{const b=ev.target.closest("[data-o]");if(b)go(b.dataset.o,"")});
 tbl.addEventListener("click",ev=>{
@@ -266,7 +337,7 @@ showAll.checked=!!S.showAll;showAll.onchange=()=>{S.showAll=showAll.checked;save
 // ---- Платежи
 function renderPay(scope){
   const o=V.org,rows=yearRows(scope,o,S.year),t=todayIso();
-  pChips.innerHTML=[o||"Все организации",`${S.year} год`].map(c=>`<span class="chip">${esc(c)}</span>`).join("")+`<span class="chip" style="cursor:pointer" onclick="shiftYear(-1)">◀ ${S.year-1}</span><span class="chip" style="cursor:pointer" onclick="shiftYear(1)">${S.year+1} ▶</span>`;
+  pChips.innerHTML=[o||"Все организации",`${S.year} год`].map(c=>`<span class="chip">${esc(c)}</span>`).join("")+`<span class="chip" style="cursor:pointer" data-act="yearPrev">◀ ${S.year-1}</span><span class="chip" style="cursor:pointer" data-act="yearNext">${S.year+1} ▶</span>`;
   const A=rows.reduce((a,r)=>{if(r.future)return a;a.acc+=r.t.pnAll;a.paid+=r.paid;if(r.rest>0.005)a.rest+=r.rest;if(r.rest>0.005&&t>dueOf(r.per))a.over+=r.rest;return a},{acc:0,paid:0,rest:0,over:0});
   pKpis.innerHTML=kpiHtml([[`ПН начислено за ${S.year}`,A.acc],[`Уплачено за ${S.year}`,A.paid],["Остаток к уплате",A.rest,"main"],["Просрочено",A.over]]);
   let h=`<thead><tr class="h"><th style="top:0">Месяц</th><th class="n" style="top:0">ПН всего</th><th class="n" style="top:0">Уплачено</th><th class="n" style="top:0">Остаток</th><th style="top:0">Срок уплаты</th><th style="top:0">Статус</th><th style="top:0"></th></tr></thead><tbody>`;
@@ -295,7 +366,7 @@ function openPay(id,pre){
 }
 function payUpd(){const per=PF("per").value,org=PF("org").value;if(!per)return;const t=sum(S.emps.filter(e=>e.org===org),per),paid=paidOf(org,"",per)-(payId?num((S.pays.find(x=>x.id===payId)||{}).sum):0);payHint.innerHTML=`${esc(org)} · ${perLabel(per)}: ПН всего <b>${fmt(t.pnAll)}</b>, уже уплачено ${fmt(paid)}, остаток ${fmt(r2(t.pnAll-paid))} · срок до ${fmtD(dueOf(per))}`}
 payFrm.addEventListener("input",payUpd);
-payDel.onclick=()=>{if(confirm("Удалить платёж?")){S.pays=S.pays.filter(x=>x.id!==payId);save();dlgPay.close();render()}};
+payDel.onclick=async()=>{if(await ask("Удалить платёж?")){S.pays=S.pays.filter(x=>x.id!==payId);save();dlgPay.close();render()}};
 dlgPay.addEventListener("close",()=>{
   if(dlgPay.returnValue!=="ok")return;dlgPay.returnValue="";
   const p={id:payId||uid()};for(const k of["org","reg","per","date","no","note"])p[k]=PF(k).value.trim();p.sum=num(PF("sum").value);
@@ -308,7 +379,7 @@ let editId=null;
 const F=n=>frm.elements[n];
 const radio=(n,v)=>frm.querySelectorAll(`input[name=${n}]`).forEach(r=>r.checked=r.value===v);
 const radioVal=n=>frm.querySelector(`input[name=${n}]:checked`).value;
-function formEmp(){return{id:editId,fio:F("fio").value.trim(),inn:F("inn").value.replace(/\D/g,""),oklad:num(F("oklad").value),org:F("org").value,reg:F("reg").value,ordDate:F("ordDate").value,fireDate:F("fireDate").value,part:radioVal("part")==="1",deps:num(F("deps").value),cat:F("cat").value,dedMode:radioVal("dedMode")}}
+function formEmp(){return{id:editId,fio:F("fio").value.trim(),inn:F("inn").value.replace(/\D/g,""),tg:F("tg").value.replace(/\D/g,""),oklad:num(F("oklad").value),org:F("org").value,reg:F("reg").value,ordDate:F("ordDate").value,fireDate:F("fireDate").value,part:radioVal("part")==="1",deps:num(F("deps").value),cat:F("cat").value,dedMode:radioVal("dedMode")}}
 function formPreview(){
   const ii=innInfo(F("inn").value);innHint.textContent=ii.ok?`${ii.sex}, род. ${ii.birth}`:ii.msg||"";innHint.className="hint "+(ii.ok?"ok":ii.msg?"bad":"");
   const e=formEmp(),per=S.period;e.m={[per]:{}};for(const k of["acc","nt","days"])if(F(k).value!=="")e.m[per][k]=num(F(k).value);
@@ -316,12 +387,14 @@ function formPreview(){
   if(!active(e,per)){calcHint.innerHTML=`В периоде ${perLabel(per)} трудовых отношений нет — ПН не начисляется.`;return}
   const c=calc(e,per),p=prof(e,per);
   calcHint.innerHTML=`Категория: <b>${CATS[p.cat]}</b> · ${p.ded?"вычет 650 + иждивенцы":"без вычета 650 ("+(e.part?"совместитель":p.short?"< 15 дней в месяце":"отключён")+")"}<br>Начислено ${fmt(c.o)} − необлаг. ${fmt(c.nt)} − ПФ ${fmt(c.sf)} − ГНПФ ${fmt(c.gn)} − вычет ${fmt(c.ded)} = база <b>${fmt(c.tb)}</b> → ПН <b>${fmt(c.pn)}</b>${c.pnMrd?` + ПН с МРД ${fmt(c.pnMrd)} (МРД ${fmt(c.mrd)})`:""} · на руки ${fmt(c.net)}`;
+  const l=editId&&linkOf({id:editId});
+  if(l)calcHint.innerHTML+=l.matched?`<br>Бот «Аванс»: <b>${esc(l.fullName)}</b> (${l.by==="telegram"?"по Telegram ID":l.by==="inn"?"по ИНН":"по ФИО"}, ID ${l.telegramId}) · аванс за период ${fmt(advTaken(l.advances))}`:`<br><span style="color:var(--warn)">В боте «Аванс» не найден — укажите Telegram ID</span>`;
 }
 function openForm(id){
   editId=id||null;const e=id?S.emps.find(x=>x.id===id):{org:V.org||ORGS[0],reg:V.reg||REGS[0],cat:"auto",dedMode:"",part:false,deps:0};
   F("org").innerHTML=orgList().map(o=>`<option>${esc(o)}</option>`).join("");
   F("reg").innerHTML=regList().map(g=>`<option>${esc(g)}</option>`).join("");
-  for(const k of["fio","inn","oklad","org","reg","ordDate","fireDate","deps"])F(k).value=e[k]??"";
+  for(const k of["fio","inn","tg","oklad","org","reg","ordDate","fireDate","deps"])F(k).value=e[k]??"";
   F("cat").value=e.cat||"auto";radio("part",e.part?"1":"0");radio("dedMode",e.dedMode||"");
   const r=id?mrec(e,S.period):{};for(const k of["acc","nt","days"])F(k).value=r[k]??"";
   perSect.textContent=`Начисления за ${perLabel(S.period)}`;
@@ -329,13 +402,13 @@ function openForm(id){
   formPreview();dlg.showModal();
 }
 frm.addEventListener("input",formPreview);
-delBtn.onclick=()=>{const e=S.emps.find(x=>x.id===editId);if(e&&confirm(`Удалить ${e.fio}? Начисления за все месяцы будут удалены.`)){S.emps=S.emps.filter(x=>x.id!==editId);save();dlg.close();render()}};
+delBtn.onclick=async()=>{const e=S.emps.find(x=>x.id===editId);if(e&&await ask(`Удалить ${e.fio}? Начисления за все месяцы будут удалены.`)){S.emps=S.emps.filter(x=>x.id!==editId);save();dlg.close();render()}};
 dlg.addEventListener("close",()=>{
   if(dlg.returnValue!=="ok")return;dlg.returnValue="";
   const n=formEmp(),old=editId?S.emps.find(x=>x.id===editId):null;
   const e=old?Object.assign(old,n):{...n,id:uid(),m:{},since:S.period};if(!old)S.emps.push(e);
   for(const k of["acc","nt","days"])setM(e,S.period,k,F(k).value===""?"":num(F(k).value));
-  save();render();
+  save();render();refreshBot(true);
 });
 
 // ---- Настройки ставок и СМЗ
@@ -349,7 +422,7 @@ function openRates(){
 rates.addEventListener("input",ev=>{const k=ev.target.dataset.r;if(k){S.rates[k]=num(ev.target.value);save();render()}});
 smzTbl.addEventListener("input",ev=>{const k=ev.target.dataset.smz;if(!k)return;if(ev.target.value==="")delete S.smz[k];else S.smz[k]=num(ev.target.value);save();render()});
 function resetRates(){for(const k in RATE_DEF)S.rates[k]=RATE_DEF[k].v;save();openRates();render()}
-function deleteAll(){if(confirm("Удалить ВСЕХ сотрудников, начисления и платежи? Отменить нельзя.")&&confirm("Точно удалить все данные?")){S.emps=[];S.pays=[];S.src=null;save();dlgRates.close();render()}}
+async function deleteAll(){if(await ask("Удалить ВСЕХ сотрудников, начисления и платежи? Отменить нельзя.")&&await ask("Точно удалить все данные?")){S.emps=[];S.pays=[];S.src=null;save();dlgRates.close();render()}}
 
 // ---- Калькулятор ПН
 let CM="gross";
@@ -383,18 +456,18 @@ function downloadTemplate(){
   const help=XLSX.utils.aoa_to_sheet([["Как заполнять"],["Одна строка — один сотрудник. Организацию и регион можно указать один раз над группой строк (пустые ячейки берутся сверху)."],["«Начислено за месяц», «Необлагаемые доходы», «Дней факт» относятся к периоду, выбранному в дашборде при загрузке. Пусто — начислено = оклад, дни — по календарю без пятниц."],["Сотрудник ищется по организации + ИНН (если ИНН нет — по ФИО): найден — обновляется, нет — добавляется."],["Категория: авто (по возрасту из ИНН), 001 работник, 003 пенсионер, 106 МОП, инв — инвалид I–II гр."],["Даты — ДД.ММ.ГГГГ."]]);
   help["!cols"]=[{wch:120}];
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Сотрудники");XLSX.utils.book_append_sheet(wb,help,"Инструкция");
-  XLSX.writeFile(wb,"Шаблон_ПН.xlsx");
+  saveXlsx(wb,"Шаблон_ПН.xlsx");
 }
 const CAT_IN={"":"auto","авто":"auto","auto":"auto","001":"std","1":"std","003":"pens","3":"pens","пенсионер":"pens","106":"mop","моп":"mop","инв":"inv","инвалид":"inv"};
 const txt=v=>{if(v==null)return"";if(typeof v==="number"&&Math.abs(v)>=1e9)return v.toFixed(0);return String(v).trim()};
 fileAdd.onchange=async()=>{
   const f=fileAdd.files[0];if(!f)return;fileAdd.value="";
-  if(typeof XLSX==="undefined")return alert("Библиотека Excel не загрузилась — нужен интернет.");
+  if(typeof XLSX==="undefined")return note("Библиотека Excel не загрузилась. Обновите страницу.");
   try{
     const wb=XLSX.read(await f.arrayBuffer()),rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:""});
     const H=rows[0].map(x=>String(x).toLowerCase()),col=(...keys)=>H.findIndex(h=>keys.some(k=>h.includes(k)));
     const C={org:col("организац"),reg:col("регион"),fio:col("фио"),inn:col("инн"),oklad:col("оклад"),acc:col("начислено"),nt:col("необлаг"),days:col("дней"),deps:col("иждив"),part:col("совмест"),cat:col("категор"),ord:col("приём","прием"),fire:col("увольн")};
-    if(C.fio<0)return alert("В первой строке нет колонки «ФИО». Используйте «⬇ Шаблон Excel».");
+    if(C.fio<0)return note("В первой строке нет колонки «ФИО». Используйте «⬇ Шаблон Excel».");
     const per=S.period,get=(r,k)=>C[k]<0?"":r[C[k]];let org="",reg="",add=0,upd=0,skip=0;
     for(const r of rows.slice(1)){
       if(txt(get(r,"org")))org=txt(get(r,"org"));if(txt(get(r,"reg")))reg=txt(get(r,"reg"));
@@ -412,11 +485,12 @@ fileAdd.onchange=async()=>{
       for(const k of["acc","nt","days"])if(txt(get(r,k))!=="")setM(e,per,k,num(get(r,k)));
     }
     S.src={name:f.name,at:Date.now()};save();render();
-    alert(`Загружено из «${f.name}» за ${perLabel(per)}:\nдобавлено ${add}, обновлено ${upd}${skip?`\nпропущено без организации/региона: ${skip}`:""}`);
-  }catch(err){alert("Не удалось прочитать файл: "+err.message)}
+    refreshBot(true);
+    note(`Загружено из «${f.name}» за ${perLabel(per)}:\nдобавлено ${add}, обновлено ${upd}${skip?`\nпропущено без организации/региона: ${skip}`:""}`);
+  }catch(err){note("Не удалось прочитать файл: "+err.message)}
 };
 function exportXlsx(){
-  if(typeof XLSX==="undefined")return alert("Библиотека Excel не загрузилась — нужен интернет.");
+  if(typeof XLSX==="undefined")return note("Библиотека Excel не загрузилась. Обновите страницу.");
   const per=S.period,head=["Организация","Регион","ФИО","ИНН","Категория","Совместитель","Иждивенцы","Начислено","Необлагаемые","Взнос ПФ","ГНПФ","Стандартный вычет","Облагаемая база","ПН удержан","МРД","ПН с МРД","ПН всего","На руки"];
   const rows=[head];
   for(const o of orgList())for(const g of regList())for(const e of S.emps.filter(x=>x.org===o&&x.reg===g&&active(x,per))){const c=calc(e,per);rows.push([o,g,e.fio,e.inn,CATS[catOf(e,per)],e.part?"Да":"Нет",num(e.deps),c.o,c.nt,c.sf,c.gn,c.ded,c.tb,c.pn,c.mrd,c.pnMrd,c.pnAll,c.net])}
@@ -428,9 +502,100 @@ function exportXlsx(){
   const ws2=XLSX.utils.aoa_to_sheet(yr);ws2["!cols"]=[16,16,6,13,13,12,11,12,12,12,12].map(w=>({wch:w}));
   const ws3=XLSX.utils.aoa_to_sheet([["Дата","Организация","Регион","За месяц","№ п/п","Сумма","Комментарий"],...S.pays.map(p=>[fmtD(p.date),p.org,p.reg,perLabel(p.per),p.no,num(p.sum),p.note])]);
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Ведомость ПН");XLSX.utils.book_append_sheet(wb,ws2,`По месяцам ${S.year}`);XLSX.utils.book_append_sheet(wb,ws3,"Платежи");
-  XLSX.writeFile(wb,`ПН_${per}.xlsx`);
+  saveXlsx(wb,`ПН_${per}.xlsx`);
 }
 
-period.value=S.period;
+const saveXlsx=(wb,name)=>XLSX.writeFile(wb,name);
+
+// ================= Авансы из бота за период: кто, сколько, какая организация =================
+const ADV_ST={pending:"Ждёт решения",approved:"Одобрен, к выдаче",paid:"Выдан",rejected:"Отклонён",canceled:"Отменён"};
+const ADV_CLS={pending:"pending",approved:"approved",paid:"auto",rejected:"rejected",canceled:"rejected"};
+function renderAdv(){
+  advTitle.textContent=`Авансы из бота «Аванс» · ${perLabel(S.period)}`;
+  if(BOT.per!==S.period){advTbl.innerHTML=`<tbody><tr><td class="empty">${BOT.err?esc(BOT.err):"Загружаю авансы из бота…"}</td></tr></tbody>`;advNote.textContent="";return}
+  // организация — из дашборда (по связи сотрудника), иначе место работы в боте
+  const orgOf={};for(const e of S.emps){const l=linkOf(e);if(l&&l.matched)orgOf[l.employeeId]=orgOf[l.employeeId]||{org:e.org,reg:e.reg}}
+  const list=BOT.requests.map(r=>({...r,o:orgOf[r.employeeId]})).filter(r=>!V.org||(r.o&&r.o.org===V.org));
+  const tot=k=>list.filter(r=>r.status===k).reduce((s,r)=>s+r.amountSom,0);
+  advNote.textContent=`Выдано ${fmt0(tot("paid"))} · к выдаче ${fmt0(tot("approved"))} · ждут решения ${fmt0(tot("pending"))} сом`;
+  let h=`<thead><tr class="h"><th style="top:0">Сотрудник</th><th style="top:0">Организация</th><th style="top:0">Регион</th><th class="n" style="top:0">Сумма</th><th style="top:0">Статус</th><th style="top:0">Заявка</th><th style="top:0">Выдан</th></tr></thead><tbody>`;
+  if(!list.length)h+=`<tr><td colspan="7" class="empty">За ${perLabel(S.period)} заявок на аванс нет</td></tr>`;
+  const dt=v=>v?new Date(v).toLocaleDateString("ru-RU"):"—";
+  for(const r of list)h+=`<tr><td>${esc(r.employeeName)}</td><td>${r.o?esc(r.o.org):`<span class="fresh" title="Сотрудник не связан с дашбордом — место работы из бота">${esc(r.workplace)} (бот)</span>`}</td><td>${r.o?esc(r.o.reg):"—"}</td><td class="n" style="font-weight:600">${fmt(r.amountSom)}</td><td><span class="st ${ADV_CLS[r.status]||""}">${ADV_ST[r.status]||esc(r.status)}</span></td><td>${dt(r.createdAt)}</td><td>${dt(r.paidAt)}</td></tr>`;
+  advTbl.innerHTML=h+"</tbody>";
+}
+
+// ================= Подключение к боту: адрес и ключ =================
+function openConn(msg){
+  connUrl.value=(CONN&&CONN.url)||DEF_BOT_URL;connKey.value="";connMsg.innerHTML=msg||"";
+  connOff.hidden=!(CONN&&CONN.key);dlgConn.showModal();
+}
+connFrm.addEventListener("submit",async ev=>{
+  ev.preventDefault();
+  const url=connUrl.value.trim(),key=connKey.value.trim()||(CONN&&CONN.key)||"";
+  if(!/^https?:\/\//.test(url)||key.length<32){connMsg.innerHTML=`<div class="bwarn">Укажите адрес бота (https://…) и ключ из команды /pn_key</div>`;return}
+  const old=CONN;CONN={url,key};connMsg.innerHTML=`<div class="fresh">Подключаюсь… бесплатный сервер может просыпаться до минуты</div>`;
+  try{ME=await api("me")}catch(e){CONN=old;connMsg.innerHTML=`<div class="bwarn">${esc(e.message)}</div>`;return}
+  try{localStorage.setItem(CONN_KEY,JSON.stringify(CONN))}catch(e){}
+  dlgConn.close();SRV.stop=false;SRV.err="";await start();
+});
+connOff.onclick=async()=>{if(await ask("Отключить этот браузер от бота? Ключ будет удалён с этого компьютера, данные на сервере останутся.")){try{localStorage.removeItem(CONN_KEY)}catch(e){}location.reload()}};
+
+// ================= Начисления → бот: «на руки» за период становится заработком в боте (лимит аванса) =================
+let BS=null;
+function openBotSend(){
+  const per=S.period,rows=[],miss=[],zero=[],byId=new Map();
+  for(const e of S.emps){
+    if(!active(e,per))continue;
+    const l=linkOf(e),c=calc(e,per);
+    if(!l||!l.matched){miss.push(e);continue}
+    const amt=Math.floor(c.net);if(amt<=0){zero.push(e);continue}
+    const ex=byId.get(l.employeeId);
+    if(ex){ex.amountSom+=amt;ex.names.push(e.fio);continue}   // совместительство в двух организациях — одна сумма в боте
+    const r={employeeId:l.employeeId,fullName:l.fullName,amountSom:amt,names:[e.fio],org:e.org};byId.set(l.employeeId,r);rows.push(r);
+  }
+  BS={per,rows,import:null};
+  const tot=rows.reduce((s,r)=>s+r.amountSom,0),pct=ME?ME.advancePercent:70;
+  botTitle.textContent=`📤 Начисления → бот «Аванс» · ${perLabel(per)}`;
+  botBody.innerHTML=`<div class="fresh">Сумма «на руки» (начислено − ПФ − ГНПФ − ПН, без копеек) станет заработком сотрудника в боте за ${perLabel(per)}. Лимит аванса в боте — ${pct}% от неё. Зарплату за месяц в бот можно загрузить <b>один раз</b>.</div>`+
+    (BOT.per!==per?`<div class="bwarn">Связь с ботом ещё загружается — закройте окно и откройте снова.</div>`:"")+
+    (miss.length?`<div class="bwarn">Не найдены в боте (${miss.length}): ${miss.slice(0,15).map(e=>esc(e.fio)).join(", ")}${miss.length>15?"…":""}. Укажите их Telegram ID в карточке.</div>`:"")+
+    (zero.length?`<div class="bwarn">Пропущены с нулевой суммой: ${zero.length}</div>`:"")+
+    `<div class="blist"><table><thead><tr><th style="top:0">Сотрудник в боте</th><th style="top:0">В дашборде</th><th class="n" style="top:0">Сумма, сом</th><th class="n" style="top:0">Лимит аванса</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.fullName)}</td><td>${esc(r.names.join(", "))}<div class="fresh">${esc(r.org)}</div></td><td class="n">${fmt0(r.amountSom)}</td><td class="n">${fmt0(Math.floor(r.amountSom*pct/100))}</td></tr>`).join("")||`<tr><td colspan="4" class="empty">Нет связанных сотрудников с суммой</td></tr>`}</tbody><tfoot><tr><td colspan="2">Итого · ${rows.length} чел.</td><td class="n">${fmt0(tot)}</td><td></td></tr></tfoot></table></div><div id="botRes"></div>`;
+  botGo.textContent="Проверить в боте";botGo.disabled=!rows.length||BOT.per!==per;botGo.hidden=false;botCancel.textContent="Закрыть";
+  dlgBot.showModal();
+}
+botGo.onclick=async()=>{
+  if(!BS)return;botGo.disabled=true;
+  try{
+    if(!BS.import){
+      const r=await api("payroll/preview",{period:BS.per,rows:BS.rows.map(({employeeId,amountSom})=>({employeeId,amountSom}))});
+      BS.import=r.import;
+      botRes.innerHTML=`<div class="bok">Бот проверил: ${r.import.rowCount} чел. на ${fmt0(r.import.totalSom)} сом. Нажмите «Начислить в боте» — сотрудники получат уведомление.</div>`;
+      botGo.textContent="Начислить в боте";botCancel.textContent="Отмена";
+    }else{
+      const r=await api(`payroll/${BS.import.id}/commit`,{});
+      BS.import=null;
+      botRes.innerHTML=`<div class="bok">✓ Начислено в боте: ${r.import.rowCount} чел., ${fmt0(r.import.totalSom)} сом за ${perLabel(r.import.period)}.</div>`;
+      botGo.hidden=true;botCancel.textContent="Готово";
+    }
+  }catch(e){botRes.innerHTML=`<div class="bwarn">${esc(e.message)}</div>`}
+  botGo.disabled=false;
+};
+// незавершённую проверку отменяем, чтобы она не блокировала повторную отправку
+dlgBot.addEventListener("close",()=>{if(BS&&BS.import){api(`payroll/${BS.import.id}/cancel`,{}).catch(()=>{});BS.import=null}});
+
+// ---- Кнопки с data-act (встроенные onclick запрещены политикой безопасности страницы)
+const ACTS={template:downloadTemplate,pickFile:()=>fileAdd.click(),exportXlsx,calc:openCalc,pay:()=>openPay(),emp:()=>openForm(),
+  yearPrev:()=>shiftYear(-1),yearNext:()=>shiftYear(1),back:()=>go(V.org,""),closeCalc:()=>dlgCalc.close(),deleteAll,resetRates,
+  botSend:openBotSend,botRefresh:()=>refreshBot(true),conn:()=>openConn(),connClose:()=>dlgConn.close()};
+document.addEventListener("click",ev=>{const b=ev.target.closest("[data-act]");if(b&&ACTS[b.dataset.act]){ev.preventDefault();ACTS[b.dataset.act]()}});
+
 period.onchange=()=>{if(period.value)setPeriod(period.value)};
-render();
+async function start(){
+  gate.hidden=false;gateMsg.textContent="Загружаю данные из бота «Аванс»… бесплатный сервер может просыпаться до минуты";
+  try{if(!ME)ME=await api("me");await loadState();gate.hidden=true}
+  catch(e){gateMsg.innerHTML=`<b>${esc(e.message)}</b>`;if(e.status===401)openConn(`<div class="bwarn">${esc(e.message)}</div>`)}
+}
+if(CONN&&CONN.key)start();else{gateMsg.textContent="Сайт не подключён к боту «Аванс».";openConn()}
+

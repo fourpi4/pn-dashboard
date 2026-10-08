@@ -353,3 +353,16 @@ dialog.calc{width:min(1180px,calc(100vw - 24px));padding:0;background:var(--bg)}
 #yearTbl td,#yearTbl th,#pSched td,#pSched th{padding:7px 9px;font-size:13px}
 .tools b{font-variant-numeric:tabular-nums}
 td input.avi:disabled{opacity:.4}
+/* ---- Вход через Telegram, связь с ботом «Аванс» */
+.gate{position:fixed;inset:0;z-index:50;background:var(--bg);display:grid;place-items:center;padding:16px}
+.gcard{max-width:460px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px 24px;box-shadow:var(--shadow)}
+.gcard h2{margin:0 0 10px;font-size:20px}
+.gcard p{margin:0 0 10px}
+.sync{font-weight:600}
+.sync.ok{color:var(--ok)}.sync.bad{color:var(--bad)}.sync.busy{color:var(--warn)}
+td.adv .sm{display:block;font-size:11px;color:var(--warn)}
+td.adv.none{color:var(--mute);font-size:12px}
+.blist{max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:8px;margin:10px 0}
+.blist td,.blist th{padding:5px 8px;font-size:13px}
+.bwarn{background:var(--warn2);color:var(--warn);border-radius:8px;padding:8px 10px;font-size:13px;margin:8px 0}
+.bok{background:var(--ok2);color:var(--ok);border-radius:8px;padding:8px 10px;font-size:13px;margin:8px 0}
